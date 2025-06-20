@@ -1,24 +1,302 @@
-This is free and unencumbered software released into the public domain.
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Breakout 最終版（滑鼠控制 + 金磚加命）</title>
+  <style>
+    html, body { margin:0; padding:0; overflow:hidden; background:#111; }
+    canvas { display:block; background:#000; }
+    #scoreboard { position:absolute; top:10px; left:50%; transform:translateX(-50%); color:#fff; font-size:18px; font-family:sans-serif; pointer-events:none; }
+    #overlay, #popup { position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); display:flex; justify-content:center; align-items:center; flex-direction:column; z-index:5; color:white; }
+    #popup { display:none; }
+    #countdown { font-size:3em; color:#fff; margin-bottom:20px; }
+    button { padding:12px 24px; font-size:1.2em; color:#fff; background:#444; border:none; border-radius:6px; cursor:pointer; }
+    button:hover { background:#666; }
+  </style>
+</head>
+<body>
+  <div id="scoreboard">分數: 0 | 生命: 3</div>
+  <canvas id="gameCanvas"></canvas>
+  <div id="overlay">
+    <div id="countdown">點擊開始</div>
+    <button id="startBtn">開始遊戲</button>
+  </div>
+  <div id="popup">
+    <div id="finalScore" style="font-size:2em; margin-bottom:20px;"></div>
+    <button id="restartBtn">再玩一次</button>
+  </div>
 
-Anyone is free to copy, modify, publish, use, compile, sell, or
-distribute this software, either in source code form or as a compiled
-binary, for any purpose, commercial or non-commercial, and by any
-means.
+  <script>
+    const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d');
+    const scoreboard = document.getElementById('scoreboard');
+    const overlay = document.getElementById('overlay'), popup = document.getElementById('popup');
+    const countdownEl = document.getElementById('countdown');
+    const startBtn = document.getElementById('startBtn'), restartBtn = document.getElementById('restartBtn');
+    const finalScoreEl = document.getElementById('finalScore');
 
-In jurisdictions that recognize copyright laws, the author or authors
-of this software dedicate any and all copyright interest in the
-software to the public domain. We make this dedication for the benefit
-of the public at large and to the detriment of our heirs and
-successors. We intend this dedication to be an overt act of
-relinquishment in perpetuity of all present and future rights to this
-software under copyright law.
+    let score = 0, lives = 3, gameStarted = false, lastTime = 0;
+    let paddle = { w:100, h:10, x:0, y:0, minW:25 };
+    let balls = [], bricks = [];
+    const brickCols = 9, brickRows = 10, brickPadding = 4;
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-OTHER DEALINGS IN THE SOFTWARE.
+    // 滑鼠控制
+    canvas.addEventListener('mousemove', e => {
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+      paddle.x = Math.max(0, Math.min(mouseX - paddle.w/2, canvas.width - paddle.w));
+    });
 
-For more information, please refer to <https://unlicense.org>
+    // 觸控控制
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      const t = e.touches[0], r = canvas.getBoundingClientRect();
+      const x = (t.clientX - r.left) * (canvas.width / r.width);
+      paddle.x = Math.max(0, Math.min(x - paddle.w/2, canvas.width - paddle.w));
+    });
+
+    startBtn.addEventListener('click', startCountdown);
+    restartBtn.addEventListener('click', () => {
+      const prevScore = score;
+      initGame();
+      alert(`上一局分數：${prevScore}`);
+    });
+
+    window.addEventListener('resize', resize);
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      paddle.w = canvas.width / 6;
+      paddle.y = canvas.height - paddle.h - 10;
+      paddle.x = (canvas.width - paddle.w) / 2;
+      layoutBricks();
+    }
+
+    function initGame() {
+      score = 0; lives = 3;
+      paddle.w = canvas.width / 6;
+      paddle.x = (canvas.width - paddle.w) / 2;
+      balls = [createBall()];
+      initBricks();
+      updateScore();
+      popup.style.display = 'none';
+      overlay.style.display = 'flex';
+      countdownEl.textContent = '點擊開始';
+    }
+
+    function createBall() {
+      let b = { x: canvas.width/2, y: canvas.height-60, r: canvas.width*0.02, speed:5, angle: Math.PI/4 };
+      b.dx = Math.cos(b.angle) * b.speed;
+      b.dy = -Math.sin(b.angle) * b.speed;
+      return b;
+    }
+
+    function createBallAt(x, y, ang, spd) {
+      let b = { x, y, r:canvas.width*0.02, speed:spd, angle:ang };
+      b.dx = Math.cos(ang) * spd;
+      b.dy = -Math.sin(ang) * spd;
+      return b;
+    }
+
+    function initBricks() {
+      bricks = [];
+      const purpleRow = brickRows - 4;
+      const rainbowRow = brickRows - 9;
+      const purpleCols = Array.from({length:3}, (_, i) => Math.round(i * (brickCols - 1) / 2));
+      const rainbowCols = Array.from({length:5}, (_, i) => Math.round(i * (brickCols - 1) / 4));
+      const slots = [];
+      for (let c = 0; c < brickCols; c++) {
+        for (let r = 0; r < brickRows; r++) {
+          if ((r === purpleRow && purpleCols.includes(c)) || (r === rainbowRow && rainbowCols.includes(c))) {
+          } else {
+            slots.push({c, r});
+          }
+        }
+      }
+      const fillTypes = [];
+      for (let i = 0; i < 7; i++) fillTypes.push(1);  // 紅磚
+      for (let i = 0; i < 3; i++) fillTypes.push(7);  // 金磚
+      const other = [0,2,4,5];
+      const remain = slots.length - fillTypes.length;
+      const baseCount = Math.floor(remain / other.length);
+      const extras = remain - baseCount * other.length;
+      other.forEach(type => {
+        for (let i = 0; i < baseCount; i++) fillTypes.push(type);
+      });
+      for (let i = 0; i < extras; i++) fillTypes.push(other[i % other.length]);
+      for (let i = fillTypes.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [fillTypes[i], fillTypes[j]] = [fillTypes[j], fillTypes[i]];
+      }
+      let idx = 0;
+      for (let c = 0; c < brickCols; c++) {
+        for (let r = 0; r < brickRows; r++) {
+          let type;
+          if (r === purpleRow && purpleCols.includes(c)) type = 3;
+          else if (r === rainbowRow && rainbowCols.includes(c)) type = 6;
+          else type = fillTypes[idx++];
+          const hits = (type === 6 ? 5 : (type === 1 ? 2 : 1));
+          bricks.push({c, r, type, hits});
+        }
+      }
+      layoutBricks();
+    }
+
+    function layoutBricks() {
+      bricks.forEach(b => {
+        const bw = (canvas.width - brickPadding*(brickCols+1)) / brickCols;
+        const bh = (canvas.height*0.4 - brickPadding*(brickRows+1)) / brickRows;
+        b.x = brickPadding + b.c*(bw + brickPadding);
+        b.y = brickPadding + b.r*(bh + brickPadding);
+        b.w = bw; b.h = bh;
+      });
+    }
+
+    function updateScore() {
+      scoreboard.textContent = `分數: ${score} | 生命: ${lives}`;
+    }
+
+    function startCountdown() {
+      let cnt = 3;
+      countdownEl.textContent = cnt;
+      const iv = setInterval(() => {
+        cnt--;
+        countdownEl.textContent = cnt > 0 ? cnt : '開始！';
+        if (cnt <= 0) {
+          clearInterval(iv);
+          setTimeout(() => {
+            overlay.style.display = 'none';
+            gameStarted = true;
+            lastTime = performance.now();
+            requestAnimationFrame(gameLoop);
+          }, 500);
+        }
+      }, 1000);
+    }
+
+    function gameLoop(ts) {
+      const dt = (ts - lastTime) / 16.67;
+      lastTime = ts;
+      update(dt);
+      draw();
+      if (gameStarted) requestAnimationFrame(gameLoop);
+    }
+
+    function update(dt) {
+      balls.forEach((b, bi) => {
+        const dx = b.dx * dt, dy = b.dy * dt;
+        const dist = Math.hypot(dx, dy);
+        const steps = Math.ceil(dist / (b.r * 0.1)) || 1;
+        const sx = dx / steps, sy = dy / steps;
+
+        for (let s = 0; s < steps; s++) {
+          let nx = b.x + sx, ny = b.y + sy, bounced = false;
+          if (nx < b.r)      { nx = b.r;      b.dx = Math.abs(b.dx);   bounced = true; }
+          else if (nx > canvas.width - b.r) { nx = canvas.width - b.r;  b.dx = -Math.abs(b.dx); bounced = true; }
+          if (ny < b.r)      { ny = b.r;      b.dy = Math.abs(b.dy);   bounced = true; }
+
+          if (ny > canvas.height - b.r) {
+            lives--; updateScore();
+            if (lives <= 0) return endGame();
+            balls[bi] = createBall();
+            return;
+          }
+
+          if (ny + b.r >= paddle.y && nx >= paddle.x && nx <= paddle.x + paddle.w) {
+            const rel = (nx - (paddle.x + paddle.w/2)) / (paddle.w/2);
+            const ang = rel * (Math.PI * 5/12);
+            b.dx = b.speed * Math.sin(ang);
+            b.dy = -b.speed * Math.cos(ang);
+            ny = paddle.y - b.r - 0.01;
+            bounced = true;
+          }
+
+          for (let j = 0; j < bricks.length; j++) {
+            const bb = bricks[j];
+            if (bb.hits <= 0) continue;
+            if (nx + b.r > bb.x && nx - b.r < bb.x + bb.w && ny + b.r > bb.y && ny - b.r < bb.y + bb.h) {
+              if (bb.type === 3 && balls.length < 4) {
+                balls.push(createBallAt(nx, ny, Math.atan2(-b.dy, b.dx), b.speed));
+              }
+              bb.hits--;
+
+              const oL = nx + b.r - bb.x;
+              const oR = bb.x + bb.w - (nx - b.r);
+              const oT = ny + b.r - bb.y;
+              const oB = bb.y + bb.h - (ny - b.r);
+              const minO = Math.min(oL, oR, oT, oB);
+              if (minO === oL)      { nx -= oL; b.dx = -Math.abs(b.dx); }
+              else if (minO === oR) { nx += oR; b.dx =  Math.abs(b.dx); }
+              else if (minO === oT) { ny -= oT; b.dy = -Math.abs(b.dy); }
+              else                  { ny += oB; b.dy =  Math.abs(b.dy); }
+
+              switch (bb.type) {
+                case 0: b.speed *= 1.2; break;
+                case 2: b.speed = Math.max(4, b.speed * 0.9); break;
+                case 4: paddle.w = Math.max(paddle.minW, paddle.w * 0.8); break;
+                case 5: paddle.w *= 1.2; break;
+                case 7: lives++; break;  // 金磚：增加一條生命
+              }
+
+              const dir = Math.atan2(b.dy, b.dx);
+              b.dx = Math.cos(dir) * b.speed;
+              b.dy = Math.sin(dir) * b.speed;
+
+              if (bb.hits === 0) {
+                if (bb.type === 1) score += 20;
+                else if (bb.type === 6) score += 250;
+                else score += 10;
+              }
+
+              updateScore();
+              bounced = true;
+              break;
+            }
+          }
+
+          b.x = nx; b.y = ny;
+          if (bounced) break;
+        }
+      });
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#0f0';
+      ctx.fillRect(paddle.x, paddle.y, paddle.w, paddle.h);
+      balls.forEach(b => {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, 2*Math.PI);
+        ctx.fillStyle = '#ff0'; ctx.fill(); ctx.closePath();
+      });
+      bricks.forEach(bb => {
+        if (bb.hits > 0) {
+          const cols = ['#00f','#f00','#0f0','#800080','#5c4033','#fff','#ff69b4','#ffd700'];
+          if (bb.type === 6) {
+            const g = ctx.createLinearGradient(bb.x, bb.y, bb.x+bb.w, bb.y);
+            ['red','orange','yellow','green','blue','indigo','violet']
+              .forEach((c,i)=>g.addColorStop(i/6,c));
+            ctx.fillStyle = g;
+          } else ctx.fillStyle = cols[bb.type] || '#888';
+          ctx.shadowBlur = bb.type===7?20:0;
+          ctx.shadowColor = '#ffd700';
+          ctx.fillRect(bb.x, bb.y, bb.w, bb.h);
+          ctx.shadowBlur = 0;
+        }
+      });
+    }
+
+    function endGame() {
+      gameStarted = false;
+      finalScoreEl.textContent = `遊戲結束！你的分數是：${score}`;
+      popup.style.display = 'flex';
+      alert(`遊戲結束！你的分數是：${score}`);
+    }
+
+    // 啟動遊戲
+    resize();
+    initGame();
+  </script>
+</body>
+</html>
